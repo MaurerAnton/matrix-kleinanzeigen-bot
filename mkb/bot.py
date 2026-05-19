@@ -53,12 +53,19 @@ class KleinanzeigenBot:
         try:
             from nio.crypto import ENCRYPTION_ENABLED
             if ENCRYPTION_ENABLED:
+                from nio.store import SqliteStore
                 CRYPTO_STORE_DIR.mkdir(parents=True, exist_ok=True)
-                store_path = str(CRYPTO_STORE_DIR)
-                self.client.store.store_path = store_path
-                await self.client.store.load()
+                self.client.store = SqliteStore(
+                    self.client.user_id,
+                    "",  # device_id auto-assigned
+                    str(CRYPTO_STORE_DIR),
+                )
+                await self.client.store.load_account()
+                await self.client.store.load_device_keys()
                 self._e2ee_enabled = True
-                logger.info("E2EE enabled (store: %s)", store_path)
+                logger.info(
+                    "E2EE enabled (store: %s)", CRYPTO_STORE_DIR
+                )
             else:
                 logger.info("E2EE not available (python-olm missing)")
         except Exception as e:
@@ -88,7 +95,10 @@ class KleinanzeigenBot:
             try:
                 await self.client.sync_forever(timeout=30000)
             except Exception as e:
-                logger.error("Sync error: %s. Retrying in 30s...", e)
+                logger.error(
+                    "Sync error: %s (type=%s). Retrying in 30s...",
+                    e, type(e).__name__,
+                )
                 await asyncio.sleep(30)
 
     async def _on_sync(self, response: SyncResponse):
