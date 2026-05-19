@@ -60,8 +60,8 @@ class KleinanzeigenBot:
                     "",  # device_id auto-assigned
                     str(CRYPTO_STORE_DIR),
                 )
-                await self.client.store.load_account()
-                await self.client.store.load_device_keys()
+                self.client.store.load_account()
+                self.client.store.load_device_keys()
                 self._e2ee_enabled = True
                 logger.info(
                     "E2EE enabled (store: %s)", CRYPTO_STORE_DIR
