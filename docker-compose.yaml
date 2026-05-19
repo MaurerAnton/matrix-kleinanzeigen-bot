@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-https://matrix.org}
+      MATRIX_USER: ${MATRIX_USER}
+      MATRIX_PASSWORD: ${MATRIX_PASSWORD}
+      DATABASE_URL: sqlite+aiosqlite:///data/kleinanzeigen.db
+      CHECK_INTERVAL: ${CHECK_INTERVAL:-600}
+    volumes:
+      - ./data:/app/data

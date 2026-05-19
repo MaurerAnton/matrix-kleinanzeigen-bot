@@ -1,0 +1,6 @@
+matrix-nio[aiohttp]>=0.24,<1.0
+beautifulsoup4>=4.12
+lxml>=5.0
+sqlalchemy[asyncio]>=2.0
+aiosqlite>=0.19
+python-dotenv>=1.0
