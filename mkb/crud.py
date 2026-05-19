@@ -58,7 +58,7 @@ async def ad_exists(session: AsyncSession, search_id: int, ad_id: str) -> bool:
 
 
 async def save_ad(session: AsyncSession, search_id: int, ad: "AdItem") -> AdPost:
-    from .scraper import AdItem
+    from .models import AdItem
     post = AdPost(
         search_id=search_id,
         ad_id=ad.id,

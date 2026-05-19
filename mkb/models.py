@@ -1,7 +1,28 @@
 import datetime
+from dataclasses import dataclass, field
+from typing import Optional
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import DeclarativeBase, relationship
+
+
+@dataclass
+class AdItem:
+    id: str
+    url: str
+    title: str
+    description: str = ""
+    location: str = ""
+    price: str = ""
+    is_top_ad: bool = False
+    image_url: Optional[str] = None
+
+
+@dataclass
+class ScrapeResult:
+    url: str
+    ad_items: list[AdItem] = field(default_factory=list)
+    error: Optional[str] = None
 
 
 class Base(DeclarativeBase):

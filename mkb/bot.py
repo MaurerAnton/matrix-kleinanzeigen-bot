@@ -10,7 +10,6 @@ from nio import (
     MatrixRoom,
     RoomMessageText,
     SyncResponse,
-    RoomEncryptedEvent,
 )
 
 from .config import MATRIX_HOMESERVER, MATRIX_USER, MATRIX_PASSWORD, MATRIX_ACCESS_TOKEN, CHECK_INTERVAL
@@ -29,9 +28,10 @@ DISCLAIMER = (
 )
 
 HELP_TEXT = (
-    "Kleinanzeigen Matrix Bot\n"
+    "Kleinanzeigen / Leboncoin Matrix Bot\n"
     "\n"
     "!add <url> [name]   add a search by URL\n"
+    "  Supported: kleinanzeigen.de, leboncoin.fr\n"
     "!remove <id>        remove a search by ID\n"
     "!list               show all searches in this room\n"
     "!check              force an immediate check\n"
@@ -78,7 +78,6 @@ class KleinanzeigenBot:
 
         self.client.add_event_callback(self._on_message, RoomMessageText)
         if self._e2ee_enabled:
-            self.client.add_event_callback(self._on_encrypted, RoomEncryptedEvent)
             self.client.add_response_callback(self._on_sync, SyncResponse)
 
         self.session = aiohttp.ClientSession()
@@ -95,15 +94,6 @@ class KleinanzeigenBot:
                 logger.info("Joined room %s", room_id)
             except Exception as e:
                 logger.error("Failed to join %s: %s", room_id, e)
-
-    async def _on_encrypted(self, room: MatrixRoom, event: RoomEncryptedEvent):
-        """Receive encrypted messages."""
-        try:
-            decrypted = await self.client.decrypt_event(event)
-            if isinstance(decrypted, RoomMessageText):
-                await self._handle_message(room, decrypted)
-        except Exception as e:
-            logger.debug("Failed to decrypt: %s", e)
 
     async def _on_message(self, room: MatrixRoom, event: RoomMessageText):
         if event.sender == self.client.user_id:
@@ -174,8 +164,12 @@ class KleinanzeigenBot:
             url.split("/")[-2] if "/" in url else "Search"
         )
 
-        if "kleinanzeigen.de" not in url:
-            await self._reply(room, "This does not look like a Kleinanzeigen URL.")
+        if "kleinanzeigen.de" not in url and "leboncoin.fr" not in url:
+            await self._reply(
+                room,
+                "Unsupported site. Currently supported: "
+                "kleinanzeigen.de, leboncoin.fr",
+            )
             return
 
         search = await crud.add_search(db, db_room, url, name)
