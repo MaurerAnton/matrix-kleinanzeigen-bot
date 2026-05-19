@@ -84,7 +84,12 @@ class KleinanzeigenBot:
         asyncio.create_task(self._scraper_loop())
 
         logger.info("Bot started. Syncing...")
-        await self.client.sync_forever(timeout=30000)
+        while True:
+            try:
+                await self.client.sync_forever(timeout=30000)
+            except Exception as e:
+                logger.error("Sync error: %s. Retrying in 30s...", e)
+                await asyncio.sleep(30)
 
     async def _on_sync(self, response: SyncResponse):
         """Handle sync responses – auto-accept invites, share keys."""
