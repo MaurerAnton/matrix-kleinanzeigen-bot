@@ -2,20 +2,24 @@ import asyncio
 import logging
 import re
 import shlex
+from pathlib import Path
 
 import aiohttp
 from nio import (
     AsyncClient,
     MatrixRoom,
     RoomMessageText,
+    SyncResponse,
+    RoomEncryptedEvent,
 )
 
-from .config import MATRIX_HOMESERVER, MATRIX_USER, MATRIX_PASSWORD, CHECK_INTERVAL
+from .config import MATRIX_HOMESERVER, MATRIX_USER, MATRIX_PASSWORD, MATRIX_ACCESS_TOKEN, CHECK_INTERVAL
 from .db import async_session, init_db
 from .scraper import scrape_url
 from . import crud
 
 logger = logging.getLogger(__name__)
+CRYPTO_STORE_DIR = Path("data/crypto_store")
 
 DISCLAIMER = (
     "Automated access to kleinanzeigen.de may violate their Terms of Service "
@@ -43,13 +47,39 @@ class KleinanzeigenBot:
         self.client = AsyncClient(MATRIX_HOMESERVER, MATRIX_USER)
         self.session: aiohttp.ClientSession | None = None
         self._disclaimed_rooms: set[str] = set()
+        self._e2ee_enabled = False
+
+    async def _setup_crypto(self):
+        try:
+            from nio.crypto import ENCRYPTION_ENABLED
+            if ENCRYPTION_ENABLED:
+                CRYPTO_STORE_DIR.mkdir(parents=True, exist_ok=True)
+                store_path = str(CRYPTO_STORE_DIR)
+                self.client.store.store_path = store_path
+                await self.client.store.load()
+                self._e2ee_enabled = True
+                logger.info("E2EE enabled (store: %s)", store_path)
+            else:
+                logger.info("E2EE not available (python-olm missing)")
+        except Exception as e:
+            logger.warning("Failed to setup E2EE: %s", e)
 
     async def start(self):
         await init_db()
-        logger.info("Logging in to %s as %s", MATRIX_HOMESERVER, MATRIX_USER)
-        await self.client.login(MATRIX_PASSWORD)
+        if MATRIX_ACCESS_TOKEN:
+            logger.info("Restoring session on %s as %s", MATRIX_HOMESERVER, MATRIX_USER)
+            self.client.access_token = MATRIX_ACCESS_TOKEN
+            self.client.user_id = MATRIX_USER
+        else:
+            logger.info("Logging in to %s as %s", MATRIX_HOMESERVER, MATRIX_USER)
+            await self.client.login(MATRIX_PASSWORD)
+
+        await self._setup_crypto()
 
         self.client.add_event_callback(self._on_message, RoomMessageText)
+        if self._e2ee_enabled:
+            self.client.add_event_callback(self._on_encrypted, RoomEncryptedEvent)
+            self.client.add_response_callback(self._on_sync, SyncResponse)
 
         self.session = aiohttp.ClientSession()
         asyncio.create_task(self._scraper_loop())
@@ -57,9 +87,30 @@ class KleinanzeigenBot:
         logger.info("Bot started. Syncing...")
         await self.client.sync_forever(timeout=30000)
 
+    async def _on_sync(self, response: SyncResponse):
+        """Handle sync responses – auto-accept invites, share keys."""
+        for room_id, info in response.rooms.invite.items():
+            try:
+                await self.client.join(room_id)
+                logger.info("Joined room %s", room_id)
+            except Exception as e:
+                logger.error("Failed to join %s: %s", room_id, e)
+
+    async def _on_encrypted(self, room: MatrixRoom, event: RoomEncryptedEvent):
+        """Receive encrypted messages."""
+        try:
+            decrypted = await self.client.decrypt_event(event)
+            if isinstance(decrypted, RoomMessageText):
+                await self._handle_message(room, decrypted)
+        except Exception as e:
+            logger.debug("Failed to decrypt: %s", e)
+
     async def _on_message(self, room: MatrixRoom, event: RoomMessageText):
         if event.sender == self.client.user_id:
             return
+        await self._handle_message(room, event)
+
+    async def _handle_message(self, room: MatrixRoom, event: RoomMessageText):
 
         body = event.body.strip()
         if not body.startswith("!"):
