@@ -18,3 +18,5 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "").lower()
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "")
 LLM_API_BASE = os.environ.get("LLM_API_BASE", "")
+
+SCRAPINGBEE_API_KEY = os.environ.get("SCRAPINGBEE_API_KEY", "")
