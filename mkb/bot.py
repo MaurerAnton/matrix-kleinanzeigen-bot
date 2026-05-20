@@ -9,7 +9,7 @@ from nio import (
     AsyncClient,
     MatrixRoom,
     RoomMessageText,
-    SyncResponse,
+    InviteMemberEvent,
 )
 
 from .config import MATRIX_HOMESERVER, MATRIX_USER, MATRIX_PASSWORD, MATRIX_ACCESS_TOKEN, CHECK_INTERVAL
@@ -96,31 +96,40 @@ class KleinanzeigenBot:
         await self._setup_crypto()
 
         self.client.add_event_callback(self._on_message, RoomMessageText)
-        if self._e2ee_enabled:
-            self.client.add_response_callback(self._on_sync, SyncResponse)
+        self.client.add_event_callback(self._on_invite, InviteMemberEvent)
 
         self.session = aiohttp.ClientSession()
         asyncio.create_task(self._scraper_loop())
 
         logger.info("Bot started. Syncing...")
+        await self._sync_loop()
+
+    async def _sync_loop(self):
+        next_batch = None
         while True:
             try:
-                await self.client.sync_forever(timeout=30000)
+                sync = await self.client.sync(
+                    timeout=30000, since=next_batch
+                )
+                if sync:
+                    # Store next_batch for future syncs
+                    if hasattr(sync, "next_batch") and sync.next_batch:
+                        next_batch = sync.next_batch
             except Exception as e:
                 logger.error(
-                    "Sync error: %s (type=%s). Retrying in 30s...",
-                    e, type(e).__name__,
+                    "Sync error (type=%s). Retrying in 10s...",
+                    type(e).__name__,
                 )
-                await asyncio.sleep(30)
+                await asyncio.sleep(10)
 
-    async def _on_sync(self, response: SyncResponse):
-        """Handle sync responses – auto-accept invites, share keys."""
-        for room_id, info in response.rooms.invite.items():
-            try:
-                await self.client.join(room_id)
-                logger.info("Joined room %s", room_id)
-            except Exception as e:
-                logger.error("Failed to join %s: %s", room_id, e)
+    async def _on_invite(self, room: MatrixRoom, event: InviteMemberEvent):
+        if event.state_key != self.client.user_id:
+            return
+        try:
+            await self.client.join(room.room_id)
+            logger.info("Joined room %s", room.room_id)
+        except Exception as e:
+            logger.error("Failed to join %s: %s", room.room_id, e)
 
     async def _on_message(self, room: MatrixRoom, event: RoomMessageText):
         if event.sender == self.client.user_id:
