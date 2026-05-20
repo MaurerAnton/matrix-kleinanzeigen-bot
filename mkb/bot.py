@@ -17,6 +17,8 @@ from .db import async_session, init_db
 from .scraper import scrape_url
 from . import crud
 from .models import build_kleinanzeigen_url
+from .llm import evaluate_listing
+from .config import LLM_PROVIDER, LLM_MODEL
 
 logger = logging.getLogger(__name__)
 CRYPTO_STORE_DIR = Path("data/crypto_store")
@@ -34,15 +36,19 @@ HELP_TEXT = (
     "!search <query> [city] [min] [max]\n"
     "                    search Kleinanzeigen by keywords\n"
     "!add <url> [name]   add a search by URL\n"
-    "  Supported: kleinanzeigen.de, leboncoin.fr\n"
     "!remove <id>        remove a search by ID\n"
     "!list               show all searches in this room\n"
     "!check              force an immediate check\n"
     "!block <word>       hide listings containing this word\n"
     "!unblock <word>     stop blocking a word\n"
     "!blocks             show blocked words\n"
+    "!eval <id> <prompt> set LLM evaluation prompt for a search\n"
+    "!evaloff <id>       disable LLM evaluation for a search\n"
+    "!evalmodel          show current LLM provider/model\n"
     "!disclaimer         show legal disclaimer\n"
     "!help               show this help\n"
+    "\n"
+    "LLM evaluation requires LLM_API_KEY (or Ollama) in .env\n"
     "\n"
     + DISCLAIMER
 )
@@ -168,6 +174,15 @@ class KleinanzeigenBot:
 
             elif cmd == "!blocks":
                 await self._cmd_blocks(db, room, db_room)
+
+            elif cmd == "!eval":
+                await self._cmd_eval(db, room, db_room, args)
+
+            elif cmd == "!evaloff":
+                await self._cmd_evaloff(db, room, db_room, args)
+
+            elif cmd == "!evalmodel":
+                await self._cmd_evalmodel(room)
 
             else:
                 await self._reply(room, f"Unknown command: {cmd}\n{HELP_TEXT}")
@@ -358,6 +373,67 @@ class KleinanzeigenBot:
             lines.append(f"  \u2022 {w.word}")
         await self._reply(room, "\n".join(lines))
 
+    async def _cmd_eval(self, db, room, db_room, args):
+        if len(args) < 2:
+            await self._reply(
+                room,
+                "Usage: !eval <search_id> <prompt>\n"
+                "Example: !eval 1 Is this a good price for a used iPhone? "
+                "Check for scratches and battery health.",
+            )
+            return
+        try:
+            sid = int(args[0])
+        except ValueError:
+            await self._reply(room, "Search ID must be a number.")
+            return
+
+        search = await crud.get_search_by_id(db, sid)
+        if search is None or search.room_id != db_room.id:
+            await self._reply(room, f"Search #{sid} not found.")
+            return
+
+        prompt = " ".join(args[1:])
+        await crud.set_eval_prompt(db, search, prompt)
+        await self._reply(
+            room,
+            f"LLM evaluation enabled for search #{sid}: **{search.name}**\n"
+            f"Prompt: _{prompt}_",
+        )
+
+    async def _cmd_evaloff(self, db, room, db_room, args):
+        if not args:
+            await self._reply(room, "Usage: !evaloff <search_id>")
+            return
+        try:
+            sid = int(args[0])
+        except ValueError:
+            await self._reply(room, "Search ID must be a number.")
+            return
+
+        search = await crud.get_search_by_id(db, sid)
+        if search is None or search.room_id != db_room.id:
+            await self._reply(room, f"Search #{sid} not found.")
+            return
+
+        await crud.set_eval_prompt(db, search, None)
+        await self._reply(room, f"LLM evaluation disabled for search #{sid}.")
+
+    async def _cmd_evalmodel(self, room):
+        if not LLM_PROVIDER:
+            await self._reply(
+                room,
+                "LLM not configured. Set LLM_PROVIDER, LLM_API_KEY (or use Ollama) in .env\n"
+                "Supported: openai, anthropic, ollama",
+            )
+            return
+        model = LLM_MODEL or "default"
+        await self._reply(
+            room,
+            f"LLM provider: **{LLM_PROVIDER}**\n"
+            f"Model: **{model}**",
+        )
+
     async def _scraper_loop(self):
         while True:
             await asyncio.sleep(CHECK_INTERVAL)
@@ -397,7 +473,22 @@ class KleinanzeigenBot:
                         if not await crud.title_is_blocked(db, room, ad.title)
                     ]
                     if filtered:
-                        await self._notify(room.room_id, search, filtered)
+                        evaluations = {}
+                        if search.eval_prompt:
+                            for ad in filtered[:3]:
+                                try:
+                                    ev = await evaluate_listing(
+                                        ad.title, ad.price,
+                                        ad.description, ad.location,
+                                        search.eval_prompt,
+                                    )
+                                    if ev:
+                                        evaluations[ad.id] = ev
+                                except Exception as e:
+                                    logger.debug("LLM eval error: %s", e)
+                        await self._notify(
+                            room.room_id, search, filtered, evaluations
+                        )
                     logger.info(
                         "Search #%d: %d new, %d after block filter",
                         search.id, len(new_items), len(filtered),
@@ -407,7 +498,9 @@ class KleinanzeigenBot:
                     "Error checking search #%d: %s", search.id, e
                 )
 
-    async def _notify(self, room_id: str, search, items):
+    async def _notify(self, room_id: str, search, items, evaluations=None):
+        if evaluations is None:
+            evaluations = {}
         lines = [
             f"**New listings for \u00ab{search.name}\u00bb**",
             "",
@@ -421,6 +514,8 @@ class KleinanzeigenBot:
             )
             if ad.location:
                 lines.append(f"  _{ad.location}_")
+            if ad.id in evaluations:
+                lines.append(f"  _\U0001f916 {evaluations[ad.id]}_")
 
         if len(items) > limit:
             lines.append("")

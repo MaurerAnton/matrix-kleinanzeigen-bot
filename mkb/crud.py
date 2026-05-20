@@ -78,6 +78,14 @@ async def mark_search_checked(session: AsyncSession, search: Search) -> None:
     await session.commit()
 
 
+async def set_eval_prompt(
+    session: AsyncSession, search: Search, prompt: str
+) -> None:
+    search.eval_prompt = prompt
+    session.add(search)
+    await session.commit()
+
+
 async def get_all_searches_for_all_rooms(
     session: AsyncSession,
 ) -> list[tuple[Room, Search]]:

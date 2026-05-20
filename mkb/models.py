@@ -47,6 +47,7 @@ class Search(Base):
     url = Column(String, nullable=False)
     name = Column(String, nullable=False)
     last_check = Column(DateTime, nullable=True)
+    eval_prompt = Column(String, nullable=True)
 
     room = relationship("Room", back_populates="searches")
     posts = relationship("AdPost", back_populates="search", cascade="all, delete-orphan")
