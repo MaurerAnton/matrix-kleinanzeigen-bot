@@ -111,10 +111,11 @@ class KleinanzeigenBot:
                 sync = await self.client.sync(
                     timeout=30000, since=next_batch
                 )
-                if sync:
-                    # Store next_batch for future syncs
-                    if hasattr(sync, "next_batch") and sync.next_batch:
-                        next_batch = sync.next_batch
+                if sync and hasattr(sync, "next_batch"):
+                    next_batch = sync.next_batch or next_batch
+            except AssertionError:
+                logger.debug("Sync assertion (progressive.chat quirk) – continuing")
+                await asyncio.sleep(5)
             except Exception as e:
                 logger.error(
                     "Sync error (type=%s). Retrying in 10s...",
