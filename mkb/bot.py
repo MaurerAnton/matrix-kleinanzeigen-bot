@@ -16,6 +16,7 @@ from .config import MATRIX_HOMESERVER, MATRIX_USER, MATRIX_PASSWORD, MATRIX_ACCE
 from .db import async_session, init_db
 from .scraper import scrape_url
 from . import crud
+from .models import build_kleinanzeigen_url
 
 logger = logging.getLogger(__name__)
 CRYPTO_STORE_DIR = Path("data/crypto_store")
@@ -30,11 +31,16 @@ DISCLAIMER = (
 HELP_TEXT = (
     "Kleinanzeigen / Leboncoin Matrix Bot\n"
     "\n"
+    "!search <query> [city] [min] [max]\n"
+    "                    search Kleinanzeigen by keywords\n"
     "!add <url> [name]   add a search by URL\n"
     "  Supported: kleinanzeigen.de, leboncoin.fr\n"
     "!remove <id>        remove a search by ID\n"
     "!list               show all searches in this room\n"
     "!check              force an immediate check\n"
+    "!block <word>       hide listings containing this word\n"
+    "!unblock <word>     stop blocking a word\n"
+    "!blocks             show blocked words\n"
     "!disclaimer         show legal disclaimer\n"
     "!help               show this help\n"
     "\n"
@@ -138,6 +144,9 @@ class KleinanzeigenBot:
             elif cmd == "!disclaimer":
                 await self._reply(room, DISCLAIMER)
 
+            elif cmd == "!search":
+                await self._cmd_search(db, room, db_room, args)
+
             elif cmd == "!add":
                 await self._cmd_add(db, room, db_room, args)
 
@@ -150,6 +159,15 @@ class KleinanzeigenBot:
             elif cmd == "!check":
                 await self._reply(room, "Running check...")
                 await self._check_all(db)
+
+            elif cmd == "!block":
+                await self._cmd_block(db, room, db_room, args)
+
+            elif cmd == "!unblock":
+                await self._cmd_unblock(db, room, db_room, args)
+
+            elif cmd == "!blocks":
+                await self._cmd_blocks(db, room, db_room)
 
             else:
                 await self._reply(room, f"Unknown command: {cmd}\n{HELP_TEXT}")
@@ -229,6 +247,117 @@ class KleinanzeigenBot:
             lines.append(f"  #{s.id} — {s.name} (last: {last})")
         await self._reply(room, "\n".join(lines))
 
+    async def _cmd_search(self, db, room, db_room, args):
+        if not args:
+            await self._reply(
+                room,
+                "Usage: !search <keyword> [city] [min_price] [max_price]\n"
+                "Example: !search iphone berlin 100 500",
+            )
+            return
+
+        query = args[0]
+        city = args[1] if len(args) > 1 else ""
+        min_price = args[2] if len(args) > 2 else ""
+        max_price = args[3] if len(args) > 3 else ""
+
+        url = build_kleinanzeigen_url(query, city, min_price, max_price)
+        name = query
+        if city:
+            name += f" ({city})"
+
+        await self._reply(
+            room, f"Searching for **{name}** ...\n{url}"
+        )
+
+        result = await scrape_url(self.session, url)
+        if result.error:
+            await self._reply(
+                room, f"Error: {result.error}"
+            )
+            return
+
+        if not result.ad_items:
+            await self._reply(room, "No listings found.")
+            return
+
+        blocked = await crud.get_blocked_words(db, db_room)
+        blocked_words = [w.word for w in blocked]
+
+        visible = [
+            ad for ad in result.ad_items
+            if not any(bw in ad.title.lower() for bw in blocked_words)
+        ]
+
+        lines = [
+            f"**Search results for \u00ab{name}\u00bb**",
+            f"Found {len(visible)} listings",
+            f"",
+        ]
+        limit = min(len(visible), 15)
+        for ad in visible[:limit]:
+            price_str = f"**{ad.price}**" if ad.price else "**? EUR**"
+            lines.append(
+                f"\u2022 [{ad.title}]({ad.url}) \u2014 {price_str}"
+            )
+            if ad.location:
+                lines.append(f"  _{ad.location}_")
+
+        if len(visible) > limit:
+            lines.append(f"_...and {len(visible) - limit} more_")
+
+        if blocked_words:
+            hidden = len(result.ad_items) - len(visible)
+            if hidden > 0:
+                lines.append(
+                    f"_({hidden} hidden by blocked words: "
+                    + ", ".join(blocked_words) + ")_"
+                )
+
+        await self._reply(room, "\n".join(lines))
+
+        search = await crud.add_search(db, db_room, url, name)
+        self._disclaimed_rooms.add(room.room_id)
+        await self._reply(
+            room,
+            f"Ongoing monitoring added as search #{search.id}. "
+            f"Use `!remove {search.id}` to stop.",
+        )
+
+    async def _cmd_block(self, db, room, db_room, args):
+        if not args:
+            await self._reply(room, "Usage: !block <word>")
+            return
+        word = args[0]
+        existing = await crud.get_blocked_word(db, db_room, word)
+        if existing:
+            await self._reply(room, f"Word **{word}** is already blocked.")
+            return
+        await crud.add_blocked_word(db, db_room, word)
+        await self._reply(room, f"Blocked word: **{word}**")
+
+    async def _cmd_unblock(self, db, room, db_room, args):
+        if not args:
+            await self._reply(room, "Usage: !unblock <word>")
+            return
+        word = args[0]
+        bw = await crud.get_blocked_word(db, db_room, word)
+        if not bw:
+            await self._reply(room, f"Word **{word}** is not blocked.")
+            return
+        await crud.remove_blocked_word(db, bw)
+        await self._reply(room, f"Unblocked: **{word}**")
+
+    async def _cmd_blocks(self, db, room, db_room):
+        words = await crud.get_blocked_words(db, db_room)
+        if not words:
+            await self._reply(room, "No blocked words.")
+            return
+        lines = ["**Blocked words:**"]
+        for w in words:
+            lines.append(f"  \u2022 {w.word}")
+        await self._reply(room, "\n".join(lines))
+
     async def _scraper_loop(self):
         while True:
             await asyncio.sleep(CHECK_INTERVAL)
@@ -263,9 +392,15 @@ class KleinanzeigenBot:
                 await crud.mark_search_checked(db, search)
 
                 if new_items:
-                    await self._notify(room.room_id, search, new_items)
+                    filtered = [
+                        ad for ad in new_items
+                        if not await crud.title_is_blocked(db, room, ad.title)
+                    ]
+                    if filtered:
+                        await self._notify(room.room_id, search, filtered)
                     logger.info(
-                        "Search #%d: %d new items", search.id, len(new_items)
+                        "Search #%d: %d new, %d after block filter",
+                        search.id, len(new_items), len(filtered),
                     )
             except Exception as e:
                 logger.exception(

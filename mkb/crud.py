@@ -5,7 +5,7 @@ from typing import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Room, Search, AdPost
+from .models import Room, Search, AdPost, BlockedWord
 
 logger = logging.getLogger(__name__)
 
@@ -88,3 +88,48 @@ async def get_all_searches_for_all_rooms(
         room = await session.get(Room, s.room_id)
         pairs.append((room, s))
     return pairs
+
+
+async def add_blocked_word(
+    session: AsyncSession, room: Room, word: str
+) -> BlockedWord:
+    bw = BlockedWord(room_id=room.id, word=word.lower())
+    session.add(bw)
+    await session.commit()
+    return bw
+
+
+async def get_blocked_words(
+    session: AsyncSession, room: Room
+) -> Sequence[BlockedWord]:
+    result = await session.execute(
+        select(BlockedWord).where(BlockedWord.room_id == room.id)
+    )
+    return result.scalars().all()
+
+
+async def get_blocked_word(
+    session: AsyncSession, room: Room, word: str
+) -> BlockedWord | None:
+    result = await session.execute(
+        select(BlockedWord).where(
+            BlockedWord.room_id == room.id,
+            BlockedWord.word == word.lower(),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def remove_blocked_word(
+    session: AsyncSession, bw: BlockedWord
+) -> None:
+    await session.delete(bw)
+    await session.commit()
+
+
+async def title_is_blocked(
+    session: AsyncSession, room: Room, title: str
+) -> bool:
+    words = await get_blocked_words(session, room)
+    title_lower = title.lower()
+    return any(w.word in title_lower for w in words)
